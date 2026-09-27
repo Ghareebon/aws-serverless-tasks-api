@@ -143,5 +143,5 @@ the free tier.
 
 ## Author
 
-Built by **[YOUR NAME]** for the AWS Solutions Architect – Associate graduation
+Built by Ahmed Ghareeb for the AWS Solutions Architect – Associate graduation
 project (Manara), based on the "Serverless REST API" brief.
