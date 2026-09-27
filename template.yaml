@@ -1,0 +1,224 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Serverless Tasks REST API — AWS SAA-C03 graduation project.
+  API Gateway (HTTP API) + Lambda (Python 3.12) + DynamoDB, with Amazon Cognito
+  user-pool authorization protecting all task endpoints.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    MemorySize: 128
+    Timeout: 10
+    Tracing: Active
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref TasksTable
+        POWERTOOLS_SERVICE_NAME: tasks-api
+
+Parameters:
+  StageName:
+    Type: String
+    Default: prod
+    Description: API Gateway deployment stage name
+
+Resources:
+
+  ##############################
+  # DynamoDB
+  ##############################
+  TasksTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-tasks"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: taskId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: taskId
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      
+
+  ##############################
+  # Cognito (auth)
+  ##############################
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${AWS::StackName}-users"
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          RequireUppercase: true
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub "${AWS::StackName}-client"
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+
+  ##############################
+  # HTTP API
+  ##############################
+  TasksApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref StageName
+      Auth:
+        Authorizers:
+          CognitoAuthorizer:
+            JwtConfiguration:
+              issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+              audience:
+                - !Ref UserPoolClient
+            IdentitySource: "$request.header.Authorization"
+        DefaultAuthorizer: CognitoAuthorizer
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowHeaders: ["*"]
+        AllowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+
+  ##############################
+  # Lambda functions
+  ##############################
+  CreateTaskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: create_task.handler
+      CodeUri: src/handlers/
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TasksTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref TasksApi
+            Path: /tasks
+            Method: POST
+
+  ListTasksFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: list_tasks.handler
+      CodeUri: src/handlers/
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref TasksTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref TasksApi
+            Path: /tasks
+            Method: GET
+
+  GetTaskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: get_task.handler
+      CodeUri: src/handlers/
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref TasksTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref TasksApi
+            Path: /tasks/{taskId}
+            Method: GET
+
+  UpdateTaskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: update_task.handler
+      CodeUri: src/handlers/
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TasksTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref TasksApi
+            Path: /tasks/{taskId}
+            Method: PUT
+
+  DeleteTaskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: delete_task.handler
+      CodeUri: src/handlers/
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TasksTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref TasksApi
+            Path: /tasks/{taskId}
+            Method: DELETE
+
+  ##############################
+  # Log groups (explicit, so we can set retention)
+  ##############################
+  CreateTaskLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${CreateTaskFunction}"
+      RetentionInDays: 14
+  ListTasksLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ListTasksFunction}"
+      RetentionInDays: 14
+  GetTaskLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${GetTaskFunction}"
+      RetentionInDays: 14
+  UpdateTaskLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${UpdateTaskFunction}"
+      RetentionInDays: 14
+  DeleteTaskLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${DeleteTaskFunction}"
+      RetentionInDays: 14
+
+Outputs:
+  ApiEndpoint:
+    Description: Base URL of the deployed Tasks API
+    Value: !Sub "https://${TasksApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Description: Cognito User Pool Client ID (use for sign-up/sign-in)
+    Value: !Ref UserPoolClient
+  TasksTableName:
+    Description: DynamoDB table name
+    Value: !Ref TasksTable
